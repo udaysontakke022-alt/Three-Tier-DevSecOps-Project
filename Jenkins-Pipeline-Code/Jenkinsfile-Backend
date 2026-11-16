@@ -8,9 +8,8 @@ pipeline {
     }
 
     environment {
-        AWS_DEFAULT_REGION = 'ap-southeast-2'
-        IMAGE_NAME = 'three-tier-backend'
         BACKEND_DIR = 'Application-Code/backend'
+        IMAGE_NAME = 'three-tier-backend'
     }
 
     stages {
@@ -27,13 +26,10 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
-
                         echo "Checking backend files..."
                         ls -la
-
                         test -f Dockerfile
                         test -f package.json
-
                         echo "Backend project verified."
                     '''
                 }
@@ -44,7 +40,6 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-
                     git --version
                     docker --version
                     node --version
@@ -61,7 +56,6 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
-
                         if [ -f package-lock.json ]; then
                             npm ci
                         else
@@ -86,7 +80,7 @@ pipeline {
                                     ? 0 : 1
                             );
                         "; then
-                            CI=true npm test
+                            npm test
                         else
                             echo "WARNING: No real backend tests configured."
                             echo "Skipping placeholder npm test."
@@ -116,16 +110,25 @@ pipeline {
             }
         }
 
+        stage('SonarQube Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
         stage('Trivy File Scan') {
             steps {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
-
-                        trivy --config "" fs \
+                        trivy fs \
                             --scanners vuln,secret \
                             --exit-code 0 \
-                            --format table . > trivyfs.txt
+                            --format table \
+                            --output trivyfs.txt \
+                            .
                     '''
                 }
             }
@@ -136,9 +139,8 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
-
                         docker build \
-                            -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
+                            -t ${IMAGE_NAME}:${BUILD_NUMBER} .
                     '''
                 }
             }
@@ -148,9 +150,8 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-
                     docker image inspect \
-                        "${IMAGE_NAME}:${BUILD_NUMBER}"
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
                 '''
             }
         }
@@ -159,30 +160,28 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-
-                    trivy --config "" image \
+                    trivy image \
                         --exit-code 0 \
-                        "${IMAGE_NAME}:${BUILD_NUMBER}" \
-                        > trivyimage.txt
+                        --format table \
+                        --output trivyimage.txt \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
                 '''
             }
         }
     }
 
     post {
-        always {
-            archiveArtifacts(
-                artifacts: '**/trivyfs.txt,trivyimage.txt',
-                allowEmptyArchive: true
-            )
-        }
-
         success {
             echo 'Backend CI Pipeline completed successfully.'
         }
 
         failure {
             echo 'Backend CI Pipeline failed. Check console output.'
+        }
+
+        always {
+            archiveArtifacts artifacts: '**/trivyfs.txt,**/trivyimage.txt',
+                             allowEmptyArchive: true
         }
     }
 }
