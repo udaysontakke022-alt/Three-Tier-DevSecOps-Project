@@ -16,7 +16,7 @@ pipeline {
     stages {
         stage('Checkout from GitHub') {
             steps {
-                git branch: 'main',
+                git branch: 'master',
                     url: 'https://github.com/udaysontakke022-alt/Three-Tier-DevSecOps-Project.git'
             }
         }
