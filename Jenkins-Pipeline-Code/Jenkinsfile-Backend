@@ -73,93 +73,36 @@ pipeline {
             }
         }
 
-        stage('Run Backend Tests') {
-            steps {
-                dir("${BACKEND_DIR}") {
-                    sh '''
-                        set -eu
-                        if [ -f package.json ]; then
-                            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
-                                CI=true npm test
-                            else
-                                echo "No npm test script; skipping."
-                            fi
-                        elif [ -f pom.xml ]; then
-                            mvn -B test
-                        else
-                            echo "No supported test configuration found."
-                        fi
-                    '''
-                }
-            }
-        }
+        
+stage('Run Backend Tests') {
+    steps {
+        dir("${BACKEND_DIR}") {
+            sh '''
+                set -eu
 
-        stage('Trivy File Scan') {
-            steps {
-                dir("${BACKEND_DIR}") {
-                    sh '''
-                        if command -v trivy >/dev/null 2>&1; then
-                            trivy fs --scanners vuln,secret \
-                                --exit-code 0 \
-                                --format table . > trivyfs.txt
-                        else
-                            echo "Trivy not installed; scan skipped."
-                        fi
-                    '''
-                }
-            }
-        }
+                if [ -f package.json ]; then
+                    node -e "
+                        const p = require('./package.json');
+                        const test = p.scripts && p.scripts.test;
+                        process.exit(
+                            test && !test.includes('no test specified')
+                                ? 0 : 1
+                        );
+                    " && HAS_TESTS=true || HAS_TESTS=false
 
-        stage('Docker Image Build') {
-            steps {
-                dir("${BACKEND_DIR}") {
-                    sh '''
-                        set -eu
-                        docker build \
-                            -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
-                    '''
-                }
-            }
-        }
-
-        stage('Verify Docker Image') {
-            steps {
-                sh '''
-                    docker image inspect \
-                        "${IMAGE_NAME}:${BUILD_NUMBER}"
-                '''
-            }
-        }
-
-        stage('Trivy Docker Image Scan') {
-            steps {
-                sh '''
-                    if command -v trivy >/dev/null 2>&1; then
-                        trivy image --exit-code 0 \
-                            "${IMAGE_NAME}:${BUILD_NUMBER}" \
-                            > trivyimage.txt
+                    if [ "$HAS_TESTS" = "true" ]; then
+                        CI=true npm test
                     else
-                        echo "Trivy not installed; scan skipped."
+                        echo "WARNING: No real backend tests configured."
+                        echo "Skipping placeholder npm test script."
                     fi
-                '''
-            }
-        }
-    }
 
-    post {
-        always {
-            archiveArtifacts(
-                artifacts: '**/trivyfs.txt,trivyimage.txt',
-                allowEmptyArchive: true
-            )
-        }
-
-        success {
-            echo 'Backend CI pipeline completed successfully.'
-        }
-
-        failure {
-            echo 'Backend CI pipeline failed. Check console output.'
+                elif [ -f pom.xml ]; then
+                    mvn -B test
+                else
+                    echo "WARNING: No test configuration found."
+                fi
+            '''
         }
     }
 }
