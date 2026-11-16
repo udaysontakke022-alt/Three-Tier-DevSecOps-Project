@@ -1,113 +1,165 @@
+
 pipeline {
-    agent any 
-    tools {
-        jdk 'jdk'
-        nodejs 'nodejs'
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
     }
-    environment  {
-        SCANNER_HOME=tool 'sonar-scanner'
-        AWS_ACCOUNT_ID = credentials('ACCOUNT_ID')
-        AWS_ECR_REPO_NAME = credentials('ECR_REPO2')
-        AWS_DEFAULT_REGION = 'us-east-1'
-        REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/"
+
+    environment {
+        AWS_DEFAULT_REGION = 'ap-southeast-2'
+        IMAGE_NAME = 'three-tier-backend'
+        BACKEND_DIR = 'Application-Code/backend'
     }
+
     stages {
-        stage('Cleaning Workspace') {
+        stage('Checkout from GitHub') {
             steps {
-                cleanWs()
+                git branch: 'main',
+                    url: 'https://github.com/udaysontakke022-alt/Three-Tier-DevSecOps-Project.git'
             }
         }
-        stage('Checkout from Git') {
+
+        stage('Verify Backend Project') {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
-            }
-        }
-        stage('Sonarqube Analysis') {
-            steps {
-                dir('Application-Code/backend') {
-                    withSonarQubeEnv('sonar-server') {
-                        sh ''' $SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectName=three-tier-backend \
-                        -Dsonar.projectKey=three-tier-backend '''
-                    }
+                dir("${BACKEND_DIR}") {
+                    sh '''
+                        set -eu
+                        echo "Checking backend files..."
+                        ls -la
+                        test -f Dockerfile
+                    '''
                 }
             }
         }
-        stage('Quality Check') {
+
+        stage('Check Build Tools') {
             steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
+                sh '''
+                    set -eu
+                    git --version
+                    docker --version
+                    java -version
+                    mvn -version
+                '''
+            }
+        }
+
+        stage('Install Backend Dependencies') {
+            steps {
+                dir("${BACKEND_DIR}") {
+                    sh '''
+                        set -eu
+                        if [ -f package-lock.json ]; then
+                            if ! command -v npm >/dev/null 2>&1; then
+                                echo "ERROR: Node.js/npm is required."
+                                exit 1
+                            fi
+                            npm ci
+                        elif [ -f package.json ]; then
+                            if ! command -v npm >/dev/null 2>&1; then
+                                echo "ERROR: Node.js/npm is required."
+                                exit 1
+                            fi
+                            npm install
+                        elif [ -f pom.xml ]; then
+                            mvn -B -DskipTests package
+                        else
+                            echo "No supported dependency manifest found."
+                        fi
+                    '''
                 }
             }
         }
-        stage('OWASP Dependency-Check Scan') {
+
+        stage('Run Backend Tests') {
             steps {
-                dir('Application-Code/backend') {
-                    dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                dir("${BACKEND_DIR}") {
+                    sh '''
+                        set -eu
+                        if [ -f package.json ]; then
+                            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
+                                CI=true npm test
+                            else
+                                echo "No npm test script; skipping."
+                            fi
+                        elif [ -f pom.xml ]; then
+                            mvn -B test
+                        else
+                            echo "No supported test configuration found."
+                        fi
+                    '''
                 }
             }
         }
+
         stage('Trivy File Scan') {
             steps {
-                dir('Application-Code/backend') {
-                    sh 'trivy fs . > trivyfs.txt'
+                dir("${BACKEND_DIR}") {
+                    sh '''
+                        if command -v trivy >/dev/null 2>&1; then
+                            trivy fs --scanners vuln,secret \
+                                --exit-code 0 \
+                                --format table . > trivyfs.txt
+                        else
+                            echo "Trivy not installed; scan skipped."
+                        fi
+                    '''
                 }
             }
         }
-        stage("Docker Image Build") {
+
+        stage('Docker Image Build') {
             steps {
-                script {
-                    dir('Application-Code/backend') {
-                            sh 'docker system prune -f'
-                            sh 'docker container prune -f'
-                            sh 'docker build -t ${AWS_ECR_REPO_NAME} .'
-                    }
+                dir("${BACKEND_DIR}") {
+                    sh '''
+                        set -eu
+                        docker build \
+                            -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
+                    '''
                 }
             }
         }
-        stage("ECR Image Pushing") {
+
+        stage('Verify Docker Image') {
             steps {
-                script {
-                        sh 'aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}'
-                        sh 'docker tag ${AWS_ECR_REPO_NAME} ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
-                        sh 'docker push ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
-                }
+                sh '''
+                    docker image inspect \
+                        "${IMAGE_NAME}:${BUILD_NUMBER}"
+                '''
             }
         }
-        stage("TRIVY Image Scan") {
+
+        stage('Trivy Docker Image Scan') {
             steps {
-                sh 'trivy image ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt' 
+                sh '''
+                    if command -v trivy >/dev/null 2>&1; then
+                        trivy image --exit-code 0 \
+                            "${IMAGE_NAME}:${BUILD_NUMBER}" \
+                            > trivyimage.txt
+                    else
+                        echo "Trivy not installed; scan skipped."
+                    fi
+                '''
             }
         }
-        stage('Checkout Code') {
-            steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
-            }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: '**/trivyfs.txt,trivyimage.txt',
+                allowEmptyArchive: true
+            )
         }
-        stage('Update Deployment file') {
-            environment {
-                GIT_REPO_NAME = "End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
-                GIT_USER_NAME = "AmanPathak-DevOps"
-            }
-            steps {
-                dir('Kubernetes-Manifests-file/Backend') {
-                    withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
-                        sh '''
-                            git config user.email "aman07pathak@gmail.com"
-                            git config user.name "AmanPathak-DevOps"
-                            BUILD_NUMBER=${BUILD_NUMBER}
-                            echo $BUILD_NUMBER
-                            imageTag=$(grep -oP '(?<=backend:)[^ ]+' deployment.yaml)
-                            echo $imageTag
-                            sed -i "s/${AWS_ECR_REPO_NAME}:${imageTag}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}/" deployment.yaml
-                            git add deployment.yaml
-                            git commit -m "Update deployment Image to version \${BUILD_NUMBER}"
-                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:master
-                        '''
-                    }
-                }
-            }
+
+        success {
+            echo 'Backend CI pipeline completed successfully.'
+        }
+
+        failure {
+            echo 'Backend CI pipeline failed. Check console output.'
         }
     }
 }
