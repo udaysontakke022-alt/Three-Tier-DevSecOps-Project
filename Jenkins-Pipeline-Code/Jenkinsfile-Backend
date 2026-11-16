@@ -14,6 +14,7 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout from GitHub') {
             steps {
                 git branch: 'master',
@@ -26,9 +27,14 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
+
                         echo "Checking backend files..."
                         ls -la
+
                         test -f Dockerfile
+                        test -f package.json
+
+                        echo "Backend project verified."
                     '''
                 }
             }
@@ -38,6 +44,7 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
                     git --version
                     docker --version
                     node --version
@@ -54,15 +61,11 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
+
                         if [ -f package-lock.json ]; then
                             npm ci
-                        elif [ -f package.json ]; then
-                            npm install
-                        elif [ -f pom.xml ]; then
-                            mvn -B -DskipTests package
                         else
-                            echo "ERROR: No dependency manifest found."
-                            exit 1
+                            npm install
                         fi
                     '''
                 }
@@ -75,26 +78,40 @@ pipeline {
                     sh '''
                         set -eu
 
-                        if [ -f package.json ]; then
-                            if node -e "
-                                const p = require('./package.json');
-                                const t = p.scripts && p.scripts.test;
-                                process.exit(
-                                    t && !t.includes('no test specified')
-                                        ? 0 : 1
-                                );
-                            "; then
-                                CI=true npm test
-                            else
-                                echo "WARNING: No real backend tests configured."
-                                echo "Skipping placeholder npm test."
-                            fi
-                        elif [ -f pom.xml ]; then
-                            mvn -B test
+                        if node -e "
+                            const p = require('./package.json');
+                            const t = p.scripts && p.scripts.test;
+                            process.exit(
+                                t && !t.includes('no test specified')
+                                    ? 0 : 1
+                            );
+                        "; then
+                            CI=true npm test
                         else
-                            echo "WARNING: No tests configured."
+                            echo "WARNING: No real backend tests configured."
+                            echo "Skipping placeholder npm test."
                         fi
                     '''
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                dir("${BACKEND_DIR}") {
+                    script {
+                        def scannerHome = tool 'sonar-scanner'
+
+                        withSonarQubeEnv('sonar-server') {
+                            sh """
+                                "${scannerHome}/bin/sonar-scanner" \
+                                    -Dsonar.projectKey=three-tier-backend \
+                                    -Dsonar.projectName=Three-Tier-Backend \
+                                    -Dsonar.sources=. \
+                                    -Dsonar.exclusions=node_modules/**,coverage/**
+                            """
+                        }
+                    }
                 }
             }
         }
@@ -104,6 +121,7 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
+
                         trivy --config "" fs \
                             --scanners vuln,secret \
                             --exit-code 0 \
@@ -118,6 +136,7 @@ pipeline {
                 dir("${BACKEND_DIR}") {
                     sh '''
                         set -eu
+
                         docker build \
                             -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
                     '''
@@ -129,6 +148,7 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
                     docker image inspect \
                         "${IMAGE_NAME}:${BUILD_NUMBER}"
                 '''
@@ -139,6 +159,7 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
                     trivy --config "" image \
                         --exit-code 0 \
                         "${IMAGE_NAME}:${BUILD_NUMBER}" \
@@ -157,11 +178,11 @@ pipeline {
         }
 
         success {
-            echo 'Backend CI pipeline completed successfully.'
+            echo 'Backend CI Pipeline completed successfully.'
         }
 
         failure {
-            echo 'Backend CI pipeline failed. Check console output.'
+            echo 'Backend CI Pipeline failed. Check console output.'
         }
     }
 }
