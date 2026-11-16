@@ -105,7 +105,7 @@ pipeline {
                         withSonarQubeEnv('sonar-server') {
                             sh """
                                 "${scannerHome}/bin/sonar-scanner" \
-                                    -Dsonar.projectKey=three-tier-backend \
+                                    -Dsonar.projectKey=Three-Tier-Backend \
                                     -Dsonar.projectName=Three-Tier-Backend \
                                     -Dsonar.sources=. \
                                     -Dsonar.exclusions=node_modules/**,coverage/**
